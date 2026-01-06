@@ -10,6 +10,17 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.fonts import addMapping
+from reportlab.platypus import Image # PDFに画像を貼るために追加
+import matplotlib.pyplot as plt
+import matplotlib
+
+# MatplotlibのバックエンドをAgg（非表示モード）に設定
+matplotlib.use('Agg')
+# 日本語フォント設定（Matplotlib用）
+# ※環境によってはこれも追加設定が必要ですが、今回は一旦英語のみまたは豆腐化覚悟で進めるか、
+# Reportlabと同じフォントファイルを指定してロードする方法があります。
+# 簡易的にデフォルトのsans-serifを使う形にします。
+plt.rcParams['font.family'] = 'sans-serif'
 
 # --- 0. 設定と準備 ---
 
@@ -127,6 +138,19 @@ def create_pdf(content_list, title, is_solution=False):
         
         # 余白設定 (問題編の場合は、生徒が計算を書くためのスペースを空ける)
         if not is_solution:
+            # 図形（画像）がある場合は表示
+            if 'image_data' in item and item['image_data']:
+                try:
+                    # バッファ位置をリセット
+                    item['image_data'].seek(0)
+                    # ReportLabのImageオブジェクト作成 (幅を調整)
+                    img = Image(item['image_data'], width=100*mm, height=75*mm) # アスペクト比は保持されないため注意
+                    img.hAlign = 'CENTER' # 中央揃え
+                    story.append(img)
+                    story.append(Spacer(1, 5*mm))
+                except Exception as e:
+                    story.append(Paragraph(f"[画像エラー: {e}]", style_normal))
+
             story.append(Spacer(1, 50*mm)) # 5cm分の計算スペース
         else:
             story.append(Spacer(1, 5*mm))
@@ -246,7 +270,21 @@ if generate_btn:
         
         prompt = f"""
         数学の問題を作成。対象:{grade}, 単元:{final_topic}, 難易度:{difficulty}
-        重要: 数式はPDF出力時に文字化けを防ぐため、LaTeX形式($...$)は使用せず、一般的なテキスト表記（例: x, 2x, 1/3, x^2）で記述すること。図形問題は文章のみで成立させること。
+        重要: 数式はPDF出力時に文字化けを防ぐため、LaTeX形式($...$)は使用せず、一般的なテキスト表記（例: x, 2x, 1/3, x^2）で記述すること。
+        
+        【図形描画機能】
+        図形が必要な問題の場合、Pythonのmatplotlibで図を描画するコードを作成してください。
+        コードは必ず以下のタグで囲んでください。
+        [PYTHON]
+        import matplotlib.pyplot as plt
+        ...
+        plt.plot(...)
+        [/PYTHON]
+        
+        ※ 注意:
+        - 最後の `plt.show()` は不要です。
+        - 図形はシンプルで見やすいものにすること。
+        - 日本語テキストを `plt.text` などで入れると文字化けする可能性が高いため、頂点記号(A, B, C)や数値(10cm)などは英数字のみを使うか、問題文側で補足してください。
         
         出力フォーマット:
         [問題]
@@ -254,6 +292,10 @@ if generate_btn:
         |||SPLIT|||
         [解答・解説]
         (解説文)
+        |||SPLIT|||
+        [PYTHON]
+        (図形描画コードがあれば)
+        [/PYTHON]
         """
         
         try:
@@ -266,12 +308,56 @@ if generate_btn:
             if "|||SPLIT|||" in content:
                 parts = content.split("|||SPLIT|||")
                 prob = parts[0].replace("[問題]", "").strip()
-                sol = parts[1].replace("[解答・解説]", "").strip()
+                # 3分割される場合（コードあり）と2分割の場合（コードなし）を考慮
+                if len(parts) >= 2:
+                    sol = parts[1].replace("[解答・解説]", "").strip()
+                else:
+                    sol = "解説が見つかりません"
+                
+                # コード部分の抽出
+                code_block = None
+                if len(parts) >= 3:
+                     # 最後のパートにコードが含まれているかチェック
+                    potential_code = parts[2]
+                    if "[PYTHON]" in potential_code and "[/PYTHON]" in potential_code:
+                        code_block = potential_code.replace("[PYTHON]", "").replace("[/PYTHON]", "").strip()
+                # 念のためコンテンツ全体からも検索（フォーマット崩れ対策）
+                elif "[PYTHON]" in content:
+                    start_idx = content.find("[PYTHON]") + 8
+                    end_idx = content.find("[/PYTHON]")
+                    code_block = content[start_idx:end_idx].strip()
+
             else:
                 prob = content
                 sol = "解説生成エラー"
+                code_block = None
             
-            st.session_state.problems_list.append({"id": i+1, "problem": prob, "solution": sol})
+            # 画像生成処理
+            img_buffer = None
+            if code_block:
+                try:
+                    # 以前の図をクリア
+                    plt.clf()
+                    
+                    # 実行用辞書
+                    exec_globals = {"plt": plt, "matplotlib": matplotlib}
+                    exec(code_block, exec_globals)
+                    
+                    # バッファに保存
+                    img_buffer = BytesIO()
+                    plt.savefig(img_buffer, format='png')
+                    img_buffer.seek(0)
+                        
+                except Exception as e:
+                    st.error(f"図形生成エラー: {e}")
+                    img_buffer = None
+            
+            st.session_state.problems_list.append({
+                "id": i+1, 
+                "problem": prob, 
+                "solution": sol, 
+                "image_data": img_buffer
+            })
             
         except Exception as e:
             st.error(f"Error: {e}")
@@ -283,6 +369,37 @@ if generate_btn:
 
 # 表示処理
 if st.session_state.problems_list:
+    # PDFボタンは編集後に表示するため、ここでの表示は削除し、ループ後に移動します。
+    st.info("以下のテキストエリアで問題文や解説を編集できます。編集内容はPDFに反映されます。")
+    st.divider()
+    
+    for i, item in enumerate(st.session_state.problems_list):
+        st.subheader(f"Q{item['id']}.")
+        
+        # 問題文の編集
+        new_prob = st.text_area(f"問題文 (Q{item['id']})", value=item['problem'], key=f"prob_{item['id']}", height=150)
+        item['problem'] = new_prob  # 状態の更新
+        
+        # 画像があれば表示
+        if item.get('image_data'):
+            st.image(item['image_data'], caption=f"Q{item['id']} 参考図")
+            # 画像の再生成は今回は未対応（テキスト編集のみ）
+            
+        # 解答・解説の編集
+        with st.expander("解答・解説を編集"):
+            new_sol = st.text_area(f"解説文 (Q{item['id']})", value=item['solution'], key=f"sol_{item['id']}", height=150)
+            item['solution'] = new_sol # 状態の更新
+            
+        # プレビュー（数式確認用）
+        with st.expander("プレビューを確認 (数式等の表示チェック)"):
+            st.markdown("**[問題]**")
+            st.markdown(item['problem'])
+            st.markdown("**[解説]**")
+            st.markdown(item['solution'])
+            
+        st.divider()
+
+    # --- PDF生成 & ダウンロード (編集後の内容で作成) ---
     st.subheader("📥 ダウンロード")
     col_pdf1, col_pdf2 = st.columns(2)
     
@@ -294,12 +411,3 @@ if st.session_state.problems_list:
         col_pdf1.download_button("📄 問題PDF", pdf_prob, "math_problems.pdf", "application/pdf", use_container_width=True)
     if pdf_sol:
         col_pdf2.download_button("📝 解答PDF", pdf_sol, "math_solutions.pdf", "application/pdf", use_container_width=True)
-    
-    st.divider()
-    
-    for item in st.session_state.problems_list:
-        st.markdown(f"### Q{item['id']}.")
-        st.markdown(item['problem'])
-        with st.expander("解答を見る"):
-            st.markdown(item['solution'])
-        st.divider()

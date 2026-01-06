@@ -12,15 +12,23 @@ from reportlab.lib.units import mm
 
 # --- 0. 設定と準備 ---
 # フォントの登録 (PDF生成用)
+from reportlab.lib.fonts import addMapping
+
 FONT_PATH = os.path.join(os.path.dirname(__file__), 'ipaexg.ttf')
+japanese_font_name = "HeiseiMin-W3" # デフォルトの日本語フォント（使用ご環境によっては使えない場合がありますが、クラッシュは防ぎます）
+
 try:
     if os.path.exists(FONT_PATH):
         pdfmetrics.registerFont(TTFont('IPAexG', FONT_PATH))
+        addMapping('IPAexG', 0, 0, 'IPAexG') # Regular
+        addMapping('IPAexG', 0, 1, 'IPAexG') # Italic (代替)
+        addMapping('IPAexG', 1, 0, 'IPAexG') # Bold (代替)
+        addMapping('IPAexG', 1, 1, 'IPAexG') # Bold Italic (代替)
+        japanese_font_name = "IPAexG"
     else:
-        # フォントがない場合は警告だけ出す（PDF生成時にエラーになるがアプリは落ちないように）
-        pass
+        st.warning(f"フォントファイルが見つかりません: {FONT_PATH}。日本語がPDFで正しく表示されない可能性があります。")
 except Exception as e:
-    print(f"Font Load Error: {e}")
+    st.error(f"フォントの読み込みに失敗しました: {e}")
 
 try:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
@@ -70,9 +78,10 @@ def create_pdf(content_list, title, is_solution=False):
     
     styles = getSampleStyleSheet()
     # 日本語フォントスタイルを追加
-    style_normal = ParagraphStyle(name='JapaneseNormal', parent=styles['Normal'], fontName='IPAexG', fontSize=10, leading=16)
-    style_title = ParagraphStyle(name='JapaneseTitle', parent=styles['Heading1'], fontName='IPAexG', fontSize=16, leading=20, alignment=1)
-    style_h2 = ParagraphStyle(name='JapaneseH2', parent=styles['Heading2'], fontName='IPAexG', fontSize=12, leading=16, spaceBefore=10)
+    # フォント名は登録状況に応じて変わる変数を使用
+    style_normal = ParagraphStyle(name='JapaneseNormal', parent=styles['Normal'], fontName=japanese_font_name, fontSize=10, leading=16)
+    style_title = ParagraphStyle(name='JapaneseTitle', parent=styles['Heading1'], fontName=japanese_font_name, fontSize=16, leading=20, alignment=1)
+    style_h2 = ParagraphStyle(name='JapaneseH2', parent=styles['Heading2'], fontName=japanese_font_name, fontSize=12, leading=16, spaceBefore=10)
 
     story = []
     story.append(Paragraph(title, style_title))

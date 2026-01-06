@@ -124,8 +124,12 @@ def create_pdf(content_list, title, is_solution=False):
         story.append(Paragraph(f"【第{i}問】", style_h2))
         # 本文
         story.append(Paragraph(text, style_normal))
-        # 余白
-        story.append(Spacer(1, 5*mm))
+        
+        # 余白設定 (問題編の場合は、生徒が計算を書くためのスペースを空ける)
+        if not is_solution:
+            story.append(Spacer(1, 50*mm)) # 5cm分の計算スペース
+        else:
+            story.append(Spacer(1, 5*mm))
     
     # ビルド（エラー時はキャッチしてNoneを返す安全策）
     try:

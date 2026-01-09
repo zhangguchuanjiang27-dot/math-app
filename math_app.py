@@ -1,6 +1,7 @@
 import streamlit as st
 from openai import OpenAI
 import os
+import json
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
@@ -241,59 +242,89 @@ if generate_btn:
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for i in range(num_questions):
-        status_text.text(f"問題 {i+1} / {num_questions} を生成中...")
+    # Step 1: 構成案の作成
+    themes = []
+    try:
+        status_text.text("問題の構成案を作成中... (AIプランニング)")
         
-        # プロンプトの多様性と単元遵守のための指示を詳細化
-        sub_instruction = ""
-        if selected_subtopic and selected_subtopic != "指定なし (ランダム)":
-            sub_instruction = f"今回は特に「{selected_subtopic}」に関する問題を作成してください。他のサブジャンルの問題は避けてください。"
-        else:
-            sub_instruction = "この単元全体から、ランダムにトピックを選んで出題してください（偏りがないように）。"
-
-        prompt = f"""
-        あなたはプロの数学教材作成者です。以下の設定で、生徒のためにユニークな数学の問題を1問作成してください。
-
+        planning_prompt = f"""
+        あなたはプロの数学教材作成者です。
+        以下の設定で、{num_questions}問分の数学の問題を作成するための「出題テーマ（シナリオ）」をリストアップしてください。
+        
         【設定】
-        ・対象学年: {grade}
-        ・メイン単元: {main_topic}
-        ・詳細ジャンル: {selected_subtopic if selected_subtopic else "指定なし"}
+        ・学年: {grade}
+        ・単元: {final_topic}
         ・難易度: {difficulty}
-        ・問題ID: {i+1} (ユーザーは複数の異なる問題を求めています)
+        
+        【必須条件】
+        1. {num_questions}個のそれぞれ異なるテーマを考えてください。（例: 計算、文章題、図形の性質などバランスよく）
+        2. 学年({grade})の学習範囲を絶対に超えないこと。
+        3. 出力は以下のJSON形式のリストのみを返してください。余計な文章は不要です。
+        ["テーマ1の説明...", "テーマ2の説明...", "テーマ3の説明..."]
+        """
 
-        【最優先指示: 単元とジャンルの厳守】
-        1. **{sub_instruction}**
-           - ユーザーは「{main_topic}」の学習を意図しています。関係のない単元の問題は絶対に作成しないでください。
-           - 「詳細ジャンル」が指定されている場合は、その内容に合致した問題を作成してください。なお、詳細ジャンルが「指定なし」の場合は、単元内の要素をバランスよく選んでください。
+        plan_res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": planning_prompt}],
+            temperature=0.7
+        )
+        
+        plan_content = plan_res.choices[0].message.content.strip()
+        # JSON部分だけを取り出す簡易処理
+        if "```json" in plan_content:
+            plan_content = plan_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in plan_content:
+            plan_content = plan_content.split("```")[1].split("```")[0].strip()
+            
+        themes = json.loads(plan_content)
+        
+        # 型チェックと補正
+        if not isinstance(themes, list):
+             themes = [str(themes)]
+             
+        # 数が足りない場合の補足
+        while len(themes) < num_questions:
+            themes.append(f"{final_topic}についての問題")
+            
+        themes = themes[:num_questions]
+        
+    except Exception as e:
+        # 失敗時は簡易テーマリストを作成
+        themes = [f"{final_topic} (パターン{i+1})" for i in range(num_questions)]
 
-        【多様性の確保】
-        ・毎回、数値や問題設定、文章題のシチュエーションをランダムに変えてください。
-        ・「計算問題」であっても、整数の計算だけでなく、分数、小数、負の数などを混ぜてバリエーションを持たせてください。
-        ・前回生成したものと同じような問題にならないように工夫してください。
-
-        【学習指導要領への適合（必須）】
-        選択された学年（{grade}）の学習範囲を絶対に超えないでください。
-        - 中学1年生: 「三平方の定理」「相似」「ルート(平方根)」「円周角」は**使用禁止**。円周率は $\pi$ ではなく文字「π」を使用。
-        - 中学2年生: 「三平方の定理」「相似」「二次方程式」は**使用禁止**。
-        - 未習の定理や公式を使わないと解けない問題は不適切として扱います。
-
-        【フォーマット等の注意】
-        ・数式はPDF化の文字化けを防ぐため、LaTeXではなく一般的なテキスト表記を使用してください（例: x^2, 3/4, 2x+5）。
-        ・図形問題は、図がなくても文章だけで状況が伝わるように記述してください。
+    # Step 2: 各問題の生成
+    for i, theme in enumerate(themes):
+        status_text.text(f"問題 {i+1} / {num_questions} を生成中...\\nテーマ: {theme}")
+        
+        prompt = f"""
+        以下のテーマに基づいて、数学の問題と解説を作成してください。
+        
+        【テーマ】
+        {theme}
+        
+        【設定】
+        ・学年: {grade} (※未習範囲は厳禁)
+        ・難易度: {difficulty}
+        ・問題ID: {i+1}
+        
+        【指示】
+        ・シンプルで明確な問題文にしてください。
+        ・数式はLaTeXではなく一般的なテキスト表記（x^2, / など）を用いてください。
+        ・解説は、生徒が理解しやすいように丁寧に記述してください。
 
         出力形式:
         [問題]
         (問題文)
         |||SPLIT|||
         [解答・解説]
-        (途中式を含めた丁寧な解説)
+        (解説文)
         """
         
         try:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.8
+                temperature=0.7
             )
             content = response.choices[0].message.content
             
@@ -308,16 +339,15 @@ if generate_btn:
             st.session_state.problems_list.append({"id": i+1, "problem": prob, "solution": sol})
             
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error generating Q{i+1}: {e}")
         
         progress_bar.progress((i + 1) / num_questions)
         
-    status_text.success("完了！")
+    status_text.success("すべての問題生成が完了しました！")
     progress_bar.empty()
 
 # 表示処理
 if st.session_state.problems_list:
-    # PDFボタンは編集後に表示するため、ここでの表示は削除し、ループ後に移動します。
     st.info("以下のテキストエリアで問題文や解説を編集できます。編集内容はPDFに反映されます。")
     st.divider()
     
@@ -328,10 +358,6 @@ if st.session_state.problems_list:
         new_prob = st.text_area(f"問題文 (Q{item['id']})", value=item['problem'], key=f"prob_{item['id']}", height=150)
         item['problem'] = new_prob  # 状態の更新
         
-        # 画像があれば表示
-        if item.get('image_data'):
-             pass # Removed image support
-            
         # 解答・解説の編集
         with st.expander("解答・解説を編集"):
             new_sol = st.text_area(f"解説文 (Q{item['id']})", value=item['solution'], key=f"sol_{item['id']}", height=150)

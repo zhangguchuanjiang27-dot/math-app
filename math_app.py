@@ -267,7 +267,7 @@ if generate_btn:
         """
         
         plan_res = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[{"role": "user", "content": planning_prompt}],
             temperature=0.7
         )
@@ -325,7 +325,7 @@ if generate_btn:
         
         try:
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7
             )
